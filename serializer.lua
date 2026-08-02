@@ -1206,7 +1206,7 @@ Serializer = (function()
 		end
 
 		if not filename then
-			filename = isGame and "Place_"..game.PlaceId or "Place_"..game.PlaceId.."_Inst_"..(isTable and root[1] or root):GetDebugId()
+			filename = isGame and "Place_"..game.PlaceId or "Place_"..game.PlaceId.."_Inst_"..(isTable and root[1] or root):Math.Random(1, 100000000)
 		end
 		if isGame then
 			filename = filename:match("%.rbxlx?$") and filename or filename..".rbxl"
