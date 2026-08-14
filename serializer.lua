@@ -1066,7 +1066,7 @@ Serializer = (function()
 			descs[0] = nextRoot
 			for i = 0,#descs do
 				local obj = descs[i]
-				if (isa(obj,"LocalScript") or isa(obj,"ModuleScript")) and not checked[obj] then
+				if (isa(obj,"Script") or isa(obj,"LocalScript") or isa(obj,"ModuleScript")) and not checked[obj] then
 					local ignored = false
 					if ignoredServices then
 						for i = 1,#ignoredServices do
@@ -1497,17 +1497,6 @@ Serializer = (function()
 							end
 						elseif special == "Func" then
 							func = prop.Func
-						elseif special == "Decompile" then
-							-- Script.Source is protected and cannot be read directly.
-							-- Supply the source collected by predecompile() to the
-							-- normal ProtectedString binary handler.
-							func = function(obj)
-								local source = sources[obj]
-								if source ~= nil then
-									return source
-								end
-								return ""
-							end
 						end
 					end
 
