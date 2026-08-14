@@ -1,4 +1,5 @@
--- Made by Moon
+
+-- Made by Moon, edited by me to work with potasium
 local Main,Serializer,API,Settings,DefaultSettings,env
 
 local service = setmetatable({},{__index = function(self,name)
@@ -22,7 +23,7 @@ DefaultSettings = {
 		IsolateStarterPlayer = true,
 		Binary = true,
 		Callback = false,
-		Clipboard = true
+		Clipboard = false
 	}
 }
 
@@ -1616,13 +1617,17 @@ Serializer = (function()
 		header[3] = s_pack("<i4",instCount)
 
 		if not saveSettings.Clipboard and not saveSettings.Callback then
-			env.appendfile(filename,concat(header),true)
-			env.appendfile(filename,concat(metaBuf),true)
-			env.appendfile(filename,concat(sstrBuf),true)
-			env.appendfile(filename,concat(instBuf),true)
-			env.appendfile(filename,concat(propBuf),true)
-			env.appendfile(filename,concat(prntBuf),true)
-			env.appendfile(filename,concat(endBuf),true)
+			local totalData = concat({
+				concat(header),
+				concat(metaBuf),
+				concat(sstrBuf),
+				concat(instBuf),
+				concat(propBuf),
+				concat(prntBuf),
+				concat(endBuf)
+			})
+
+			env.writefile(filename,totalData)
 
 			if statusText then
 				statusText.Update("Saved to the file "..filename.." in "..(tick()-startB).." secs")
@@ -1907,6 +1912,13 @@ Serializer = (function()
 
 	Serializer.SaveInstance = function(root,filename,opts)
 		if not gameId then gameId = game.GameId end
+
+		-- Potassium writefile() writes relative paths into its workspace.
+		-- Keep the filename relative rather than trying to create a literal
+		-- "workspace/" directory.
+		if filename and type(filename) == "string" then
+			filename = filename:gsub("^[/\\]+", "")
+		end
 		local saveSettings = {}
 		for set,val in pairs(Settings.Serializer) do
 			if opts and opts[set] ~= nil then
@@ -2113,6 +2125,10 @@ return {
 	end,
 
 	Save = function(object, filename, options)
-		return Serializer.SaveInstance(object, filename, options)
+		local ok, result = pcall(Serializer.SaveInstance, object, filename, options)
+		if not ok then
+			return false, result
+		end
+		return true, result
 	end
 }
