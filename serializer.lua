@@ -1,4 +1,5 @@
--- edited by me for potassium
+
+-- edited for potassium
 local Main,Serializer,API,Settings,DefaultSettings,env
 
 local service = setmetatable({},{__index = function(self,name)
@@ -10,7 +11,7 @@ end})
 DefaultSettings = {
 	Serializer = {
 		_Recurse = true,
-		Decompile = false,
+		Decompile = true,
 		NilInstances = false,
 		RemovePlayerCharacters = true,
 		SavePlayers = false,
@@ -989,18 +990,24 @@ Serializer = (function()
 	end
 
 	local function doDecompile(scr,saveSettings)
-		-- Potassium exposes decompile(script) directly and returns the
-		-- decompiled source. Keep the old timeout setting for compatibility,
-		-- but don't pass legacy callback/timeout arguments to Potassium.
+		-- Potassium exposes decompile(script) directly. The original serializer
+		-- expects this helper to return source,err; keep that contract so the
+		-- existing predecompile() and Source-property serialization remain
+		-- unchanged.
+		if type(decompile) ~= "function" then
+			return nil, "Potassium decompile() is unavailable"
+		end
+
 		local ok, source = pcall(decompile, scr)
 		if ok and type(source) == "string" then
-			return source
+			return source, nil
 		end
-		return nil, ok and "decompiler returned no source" or tostring(source)
+
+		return nil, ok and "decompile() returned no source" or tostring(source)
 	end
 
 	local function createStatusText()
-		if not Drawing or not Drawing.new then
+		if not Drawing or type(Drawing.new) ~= "function" then
 			return nil
 		end
 
@@ -1027,12 +1034,8 @@ Serializer = (function()
 		end
 
 		local function removeStatus()
-			pcall(function()
-				statusText.Visible = false
-			end)
-			pcall(function()
-				statusText:Remove()
-			end)
+			pcall(function() statusText.Visible = false end)
+			pcall(function() statusText:Remove() end)
 		end
 
 		return {Update = updateStatus, Remove = removeStatus}
@@ -1616,17 +1619,13 @@ Serializer = (function()
 		header[3] = s_pack("<i4",instCount)
 
 		if not saveSettings.Clipboard and not saveSettings.Callback then
-			local totalData = concat({
-				concat(header),
-				concat(metaBuf),
-				concat(sstrBuf),
-				concat(instBuf),
-				concat(propBuf),
-				concat(prntBuf),
-				concat(endBuf)
-			})
-
-			env.writefile(filename,totalData)
+			env.appendfile(filename,concat(header),true)
+			env.appendfile(filename,concat(metaBuf),true)
+			env.appendfile(filename,concat(sstrBuf),true)
+			env.appendfile(filename,concat(instBuf),true)
+			env.appendfile(filename,concat(propBuf),true)
+			env.appendfile(filename,concat(prntBuf),true)
+			env.appendfile(filename,concat(endBuf),true)
 
 			if statusText then
 				statusText.Update("Saved to the file "..filename.." in "..(tick()-startB).." secs")
@@ -1898,7 +1897,7 @@ Serializer = (function()
 		end
 
 		buffer[bufferCount] = "\n</SharedStrings>\n</roblox>"
-		env.writefile(filename,table.concat(buffer))
+		env.appendfile(filename,table.concat(buffer))
 		table.clear(buffer)
 		table.clear(hashs)
 		table.clear(sharedStrings)
@@ -1911,16 +1910,6 @@ Serializer = (function()
 
 	Serializer.SaveInstance = function(root,filename,opts)
 		if not gameId then gameId = game.GameId end
-		if filename and type(filename) == "string" then
-			filename = filename:gsub("^[/\\]+", "")
-		end
-
-		-- Potassium writefile() writes relative paths into its workspace.
-		-- Keep the filename relative rather than trying to create a literal
-		-- "workspace/" directory.
-		if filename and type(filename) == "string" then
-			filename = filename:gsub("^[/\\]+", "")
-		end
 		local saveSettings = {}
 		for set,val in pairs(Settings.Serializer) do
 			if opts and opts[set] ~= nil then
@@ -1968,38 +1957,12 @@ Main = (function()
 		local rawAPI
 		
 		if game:GetService("RunService"):IsStudio() then
-			local ok, result = pcall(function()
-				return require(game.ReplicatedStorage.FullAPI)
-			end)
-			if ok then
-				rawAPI = result
-			end
+			rawAPI = require(game.ReplicatedStorage.FullAPI)
 		else
-			local fetch = httpget
-			if type(fetch) ~= "function" then
-				return nil, "Potassium httpget() is unavailable"
-			end
-			local ok, result = pcall(fetch, "https://raw.githubusercontent.com/MaximumADHD/Roblox-Client-Tracker/refs/heads/roblox/Full-API-Dump.json")
-			if not ok then
-				return nil, "httpget failed: " .. tostring(result)
-			end
-			rawAPI = result
+			rawAPI = game:HttpGet("https://raw.githubusercontent.com/MaximumADHD/Roblox-Client-Tracker/refs/heads/roblox/Full-API-Dump.json")
 		end
-
-		if type(rawAPI) == "table" then
-			-- Studio FullAPI may already be decoded.
-		else
-			local ok, decoded = pcall(service.HttpService.JSONDecode, service.HttpService, rawAPI)
-			if not ok then
-				return nil, "Full API JSON decode failed: " .. tostring(decoded)
-			end
-			rawAPI = decoded
-		end
-
-		local api = rawAPI
-		if type(api) ~= "table" or type(api.Classes) ~= "table" or type(api.Enums) ~= "table" then
-			return nil, "Invalid Full API dump"
-		end
+		
+		local api = service.HttpService:JSONDecode(rawAPI)
 		local classes,enums = {},{}
 
 		for _,class in pairs(api.Classes) do
@@ -2112,8 +2075,19 @@ return {
 		end
 		API = api
 
-		if type(writefile) ~= "function" then
-			return nil, "Potassium writefile() is unavailable"
+		local required = {
+			writefile = writefile,
+			appendfile = appendfile,
+			gethiddenproperty = gethiddenproperty,
+			getnilinstances = getnilinstances,
+			getbspval = getbspval,
+			decompile = decompile,
+			crypt = crypt,
+		}
+		for name,value in pairs(required) do
+			if value == nil then
+				return nil, "Potassium API missing required capability: " .. name
+			end
 		end
 
 		env = {}
@@ -2142,10 +2116,6 @@ return {
 	end,
 
 	Save = function(object, filename, options)
-		local ok, result = pcall(Serializer.SaveInstance, object, filename, options)
-		if not ok then
-			return false, result
-		end
-		return true, result
+		return Serializer.SaveInstance(object, filename, options)
 	end
 }
