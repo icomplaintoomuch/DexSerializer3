@@ -1,3 +1,4 @@
+
 -- edited for potassium
 local Main,Serializer,API,Settings,DefaultSettings,env
 
@@ -22,7 +23,8 @@ DefaultSettings = {
 		IsolateStarterPlayer = true,
 		Binary = true,
 		Callback = false,
-		Clipboard = true
+		Clipboard = false,
+		Diagnostics = true
 	}
 }
 
@@ -1972,7 +1974,7 @@ Serializer = (function()
 		end
 
 		buffer[bufferCount] = "\n</SharedStrings>\n</roblox>"
-		env.appendfile(filename,table.concat(buffer))
+		env.writefile(filename,table.concat(buffer))
 		table.clear(buffer)
 		table.clear(hashs)
 		table.clear(sharedStrings)
@@ -1987,6 +1989,9 @@ Serializer = (function()
 
 	Serializer.SaveInstance = function(root,filename,opts)
 		if not gameId then gameId = game.GameId end
+		if filename and type(filename) == "string" then
+			filename = filename:gsub("^[/\\]+", "")
+		end
 		if filename and type(filename) == "string" then
 			filename = filename:gsub("^[/\\\\]+", "")
 		end
@@ -2200,6 +2205,10 @@ return {
 	end,
 
 	Save = function(object, filename, options)
+		if type(writefile) ~= "function" then
+			return false, "Potassium writefile() is unavailable"
+		end
+
 		local ok, report = pcall(Serializer.SaveInstance, object, filename, options)
 		if not ok then
 			return false, report
