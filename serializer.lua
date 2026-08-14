@@ -22,7 +22,7 @@ DefaultSettings = {
 		IsolateStarterPlayer = true,
 		Binary = true,
 		Callback = false,
-		Clipboard = false
+		Clipboard = true
 	}
 }
 
@@ -989,18 +989,22 @@ Serializer = (function()
 	end
 
 	local function doDecompile(scr,saveSettings)
-		-- Synapse-style path: decompile(script) returns source directly.
-		-- Potassium exposes the same direct decompile capability.
+		-- Potassium exposes decompile(script). Keep the serializer's original
+		-- source,error contract, but make every failure explicit.
 		if type(decompile) ~= "function" then
-			return nil, "decompile() is unavailable"
+			return nil, "Potassium decompile() is unavailable"
 		end
 
 		local ok, source = pcall(decompile, scr)
-		if ok and type(source) == "string" then
-			return source
+		if ok and type(source) == "string" and #source > 0 then
+			return source, nil
 		end
 
-		return nil, ok and "decompile() returned no source" or tostring(source)
+		if ok then
+			return nil, "decompile() returned empty/non-string source"
+		end
+
+		return nil, tostring(source)
 	end
 
 	local function createStatusText()
@@ -1043,81 +1047,118 @@ Serializer = (function()
 	end
 
 	local function predecompile(root,statusText,saveSettings)
-		if not saveSettings.Decompile then return {} end
+		local sources = {}
+		local report = {
+			TotalScripts = 0,
+			Decompiled = 0,
+			Failed = 0,
+			Ignored = 0,
+			Failures = {},
+			ByClass = {}
+		}
 
-		local scripts,sources,checked = {},{},{}
-		local ignoredServices
-		local scriptCount,totalScripts = 1,0
+		if not saveSettings.Decompile then
+			return sources, report
+		end
 
+		local ignoredServices = {}
 		if root == game and saveSettings.DecompileIgnore then
-			ignoredServices = {}
-			for i,v in pairs(saveSettings.DecompileIgnore) do
-				ignoredServices[i] = game:GetService(v)
-			end
-		end
-
-		local isTable = type(root) == "table"
-		local objs = isTable and root or {root}
-		local maxThreads = saveSettings.MaxThreads or 3
-		local isDescendantOf = game.IsDescendantOf
-
-		if saveSettings.NilInstances and root == game and getnilinstances then
-			local nilInsts = getnilinstances()
-			table.move(nilInsts,1,#nilInsts,#objs+1,objs)
-		end
-
-		for i = 1,#objs do
-			local nextRoot = objs[i]
-			local descs = nextRoot:GetDescendants()
-			descs[0] = nextRoot
-			for i = 0,#descs do
-				local obj = descs[i]
-				if (isa(obj,"LocalScript") or isa(obj,"ModuleScript")) and not checked[obj] then
-					local ignored = false
-					if ignoredServices then
-						for i = 1,#ignoredServices do
-							if isDescendantOf(obj,ignoredServices[i]) then
-								ignored = true
-								break
-							end
-						end
-					end
-
-					if not ignored then
-						scripts[scriptCount] = obj
-						scriptCount = scriptCount + 1
-					end
-
-					checked[obj] = true
+			for _,serviceName in ipairs(saveSettings.DecompileIgnore) do
+				local ok, serviceObj = pcall(game.GetService, game, serviceName)
+				if ok and serviceObj then
+					ignoredServices[#ignoredServices + 1] = serviceObj
 				end
 			end
 		end
-		totalScripts = scriptCount - 1
 
-		local left = totalScripts
-		for i = 1,maxThreads do
-			spawn(function()
-				while #scripts > 0 do
-					local nextScript = table.remove(scripts)
-					local source, err = doDecompile(nextScript,saveSettings)
-
-					if source then
-						sources[nextScript] = source
-					else
-						sources[nextScript] = "-- This script could not be decompiled because:\n-- "..(err or "N/A")
-					end
-
-					left = left - 1
-					if statusText then
-						statusText.Update("Decompiling scripts... (" .. (totalScripts - left) .. "/" .. totalScripts .. ")")
-					end
-				end
-			end)
+		local roots
+		if type(root) == "table" then
+			roots = root
+		else
+			roots = {root}
 		end
 
-		while left > 0 do wait() end
+		local seen = {}
+		local scripts = {}
 
-		return sources
+		local function ignored(obj)
+			for i = 1,#ignoredServices do
+				if obj:IsDescendantOf(ignoredServices[i]) then
+					return true
+				end
+			end
+			return false
+		end
+
+		local function consider(obj)
+			if not obj or seen[obj] then
+				return
+			end
+
+			seen[obj] = true
+
+			-- Unlike the old implementation, ordinary Script objects are included.
+			-- This is essential for ServerStorage/ServerScriptService.
+			local isScript = obj:IsA("Script") or obj:IsA("LocalScript") or obj:IsA("ModuleScript")
+			if not isScript then
+				return
+			end
+
+			if ignored(obj) then
+				report.Ignored = report.Ignored + 1
+				return
+			end
+
+			scripts[#scripts + 1] = obj
+		end
+
+		for _,rootObj in ipairs(roots) do
+			consider(rootObj)
+			for _,obj in ipairs(rootObj:GetDescendants()) do
+				consider(obj)
+			end
+		end
+
+		report.TotalScripts = #scripts
+
+		for i,scriptObj in ipairs(scripts) do
+			local className = scriptObj.ClassName
+			report.ByClass[className] = (report.ByClass[className] or 0) + 1
+
+			if statusText then
+				statusText.Update(string.format(
+					"Decompiling scripts... (%d/%d) %s",
+					i - 1, #scripts, scriptObj:GetFullName()
+				))
+			end
+
+			local source, err = doDecompile(scriptObj, saveSettings)
+			if source then
+				sources[scriptObj] = source
+				report.Decompiled = report.Decompiled + 1
+			else
+				report.Failed = report.Failed + 1
+				report.Failures[#report.Failures + 1] = {
+					Instance = scriptObj:GetFullName(),
+					Class = scriptObj.ClassName,
+					Error = err or "unknown error"
+				}
+				-- Keep a visible placeholder so the exported script does not
+				-- silently appear to have vanished.
+				sources[scriptObj] =
+					"-- This script could not be decompiled.\n" ..
+					"-- Error: " .. tostring(err or "unknown error")
+			end
+		end
+
+		if statusText then
+			statusText.Update(string.format(
+				"Decompile complete: %d/%d succeeded, %d failed",
+				report.Decompiled, report.TotalScripts, report.Failed
+			))
+		end
+
+		return sources, report
 	end
 
 	local function serializeBinary(root,filename,saveSettings)
@@ -1187,7 +1228,7 @@ Serializer = (function()
 		end
 
 		local statusText = saveSettings.ShowStatus and createStatusText()
-		local sources = predecompile(root,statusText,saveSettings)
+		local sources, decompileReport = predecompile(root,statusText,saveSettings)
 
 		-- Count instances and instance types
 		local function recur(obj)
@@ -1375,13 +1416,13 @@ Serializer = (function()
 			local szObjs = #objs
 			local result = tableCreate(szObjs)
 			for i = 1,szObjs do
-				local val
-				if sources[objs[i]] then
-					val = sources[objs[i]]
-				elseif not decompileEnabled then
-					val = "-- Decompiling is disabled"
-				else
-					val = "-- Script failed to decompile or ignored"
+				local val = sources[objs[i]]
+				if val == nil then
+					if not decompileEnabled then
+						val = "-- Decompiling is disabled"
+					else
+						val = "-- Script failed to decompile or was not included in the source map"
+					end
 				end
 
 				result[i] = s_pack("<I4",#val)..val
@@ -1620,13 +1661,30 @@ Serializer = (function()
 		header[3] = s_pack("<i4",instCount)
 
 		if not saveSettings.Clipboard and not saveSettings.Callback then
-			env.appendfile(filename,concat(header),true)
-			env.appendfile(filename,concat(metaBuf),true)
-			env.appendfile(filename,concat(sstrBuf),true)
-			env.appendfile(filename,concat(instBuf),true)
-			env.appendfile(filename,concat(propBuf),true)
-			env.appendfile(filename,concat(prntBuf),true)
-			env.appendfile(filename,concat(endBuf),true)
+			local totalData = concat({
+				concat(header),
+				concat(metaBuf),
+				concat(sstrBuf),
+				concat(instBuf),
+				concat(propBuf),
+				concat(prntBuf),
+				concat(endBuf)
+			})
+			env.writefile(filename,totalData)
+
+			if saveSettings.Diagnostics and decompileReport then
+				local diagnosticLines = {}
+				diagnosticLines[#diagnosticLines + 1] = "Decompile report"
+				diagnosticLines[#diagnosticLines + 1] = "Total scripts: " .. tostring(decompileReport.TotalScripts)
+				diagnosticLines[#diagnosticLines + 1] = "Decompiled: " .. tostring(decompileReport.Decompiled)
+				diagnosticLines[#diagnosticLines + 1] = "Failed: " .. tostring(decompileReport.Failed)
+				diagnosticLines[#diagnosticLines + 1] = "Ignored: " .. tostring(decompileReport.Ignored)
+				for _,failure in ipairs(decompileReport.Failures) do
+					diagnosticLines[#diagnosticLines + 1] =
+						failure.Class .. " | " .. failure.Instance .. " | " .. failure.Error
+				end
+				env.writefile(filename .. ".decompile.txt", table.concat(diagnosticLines, "\n"))
+			end
 
 			if statusText then
 				statusText.Update("Saved to the file "..filename.." in "..(tick()-startB).." secs")
@@ -1644,6 +1702,8 @@ Serializer = (function()
 				task.spawn(saveSettings.Callback,totalData)
 			end
 		end
+
+		return decompileReport
 	end
 
 	local function serializeXML(root,filename,saveSettings)
@@ -1673,7 +1733,7 @@ Serializer = (function()
 		local savingDefaultProps = not saveSettings.IgnoreDefaultProps
 		local decompileEnabled = saveSettings.Decompile
 		local statusText = saveSettings.ShowStatus and createStatusText()
-		local sources = predecompile(root,statusText,saveSettings)
+		local sources, decompileReport = predecompile(root,statusText,saveSettings)
 
 		-- Set up filter
 		if isGame then
@@ -1897,6 +1957,20 @@ Serializer = (function()
 			bufferCount = bufferCount + 1
 		end
 
+		if saveSettings.Diagnostics and decompileReport then
+			local diagnosticLines = {}
+			diagnosticLines[#diagnosticLines + 1] = "Decompile report"
+			diagnosticLines[#diagnosticLines + 1] = "Total scripts: " .. tostring(decompileReport.TotalScripts)
+			diagnosticLines[#diagnosticLines + 1] = "Decompiled: " .. tostring(decompileReport.Decompiled)
+			diagnosticLines[#diagnosticLines + 1] = "Failed: " .. tostring(decompileReport.Failed)
+			diagnosticLines[#diagnosticLines + 1] = "Ignored: " .. tostring(decompileReport.Ignored)
+			for _,failure in ipairs(decompileReport.Failures) do
+				diagnosticLines[#diagnosticLines + 1] =
+					failure.Class .. " | " .. failure.Instance .. " | " .. failure.Error
+			end
+			env.writefile(filename .. ".decompile.txt", table.concat(diagnosticLines, "\n"))
+		end
+
 		buffer[bufferCount] = "\n</SharedStrings>\n</roblox>"
 		env.appendfile(filename,table.concat(buffer))
 		table.clear(buffer)
@@ -1907,10 +1981,15 @@ Serializer = (function()
 			statusText.Update("Saved to the file "..filename.." in "..(tick()-startB).." secs")
 			delay(5,statusText.Remove)
 		end
+
+		return decompileReport
 	end
 
 	Serializer.SaveInstance = function(root,filename,opts)
 		if not gameId then gameId = game.GameId end
+		if filename and type(filename) == "string" then
+			filename = filename:gsub("^[/\\\\]+", "")
+		end
 		local saveSettings = {}
 		for set,val in pairs(Settings.Serializer) do
 			if opts and opts[set] ~= nil then
@@ -1922,9 +2001,9 @@ Serializer = (function()
 		if saveSettings.DecompileMode and saveSettings.DecompileMode > 0 then saveSettings.Decompile = true end
 
 		if saveSettings.Binary then
-			serializeBinary(root,filename,saveSettings)
+			return serializeBinary(root,filename,saveSettings)
 		else
-			serializeXML(root,filename,saveSettings)
+			return serializeXML(root,filename,saveSettings)
 		end
 	end
 
@@ -1958,12 +2037,31 @@ Main = (function()
 		local rawAPI
 		
 		if game:GetService("RunService"):IsStudio() then
-			rawAPI = require(game.ReplicatedStorage.FullAPI)
+			local ok, result = pcall(require, game.ReplicatedStorage.FullAPI)
+			if ok then
+				rawAPI = result
+			end
 		else
-			rawAPI = game:HttpGet("https://raw.githubusercontent.com/MaximumADHD/Roblox-Client-Tracker/refs/heads/roblox/Full-API-Dump.json")
+			if type(httpget) ~= "function" then
+				return nil, "Potassium httpget() is unavailable"
+			end
+			local ok, result = pcall(httpget, "https://raw.githubusercontent.com/MaximumADHD/Roblox-Client-Tracker/refs/heads/roblox/Full-API-Dump.json")
+			if not ok then
+				return nil, "httpget failed: " .. tostring(result)
+			end
+			rawAPI = result
 		end
-		
-		local api = service.HttpService:JSONDecode(rawAPI)
+
+		local api
+		if type(rawAPI) == "table" then
+			api = rawAPI
+		else
+			local ok, result = pcall(service.HttpService.JSONDecode, service.HttpService, rawAPI)
+			if not ok then
+				return nil, "Full API JSON decode failed: " .. tostring(result)
+			end
+			api = result
+		end
 		local classes,enums = {},{}
 
 		for _,class in pairs(api.Classes) do
@@ -2070,32 +2168,13 @@ end)()
 
 return {
 	Init = function(oldindex)
-		local api, e = Main.FetchAPI() -- TODO: only request new api on roblox updates?
+		local api, e = Main.FetchAPI()
 		if not api then
-			return nil, "FetchAPI failed (" .. tostring(e) .. ")"
+			return false, "FetchAPI failed (" .. tostring(e) .. ")"
 		end
 		API = api
 
-		local required = {
-			writefile = writefile,
-			appendfile = appendfile,
-			gethiddenproperty = gethiddenproperty,
-			getnilinstances = getnilinstances,
-			getbspval = getbspval,
-			decompile = decompile,
-			crypt = crypt,
-		}
-		for name,value in pairs(required) do
-			if value == nil then
-				return nil, "Potassium API missing required capability: " .. name
-			end
-		end
-
 		env = {}
-
-		-- Potassium API bindings. These intentionally avoid syn/elysian
-		-- compatibility branches and use the names documented in the
-		-- supplied Potassium API reference.
 		env.writefile = writefile
 		env.appendfile = appendfile
 		env.getnilinstances = getnilinstances
@@ -2110,6 +2189,10 @@ return {
 		end
 		env.setrbxclipboard = setrbxclipboard
 
+		if type(env.writefile) ~= "function" then
+			return false, "Potassium writefile() is unavailable"
+		end
+
 		Main.ResetSettings()
 		Serializer.Init(oldindex)
 
@@ -2117,6 +2200,10 @@ return {
 	end,
 
 	Save = function(object, filename, options)
-		return Serializer.SaveInstance(object, filename, options)
+		local ok, report = pcall(Serializer.SaveInstance, object, filename, options)
+		if not ok then
+			return false, report
+		end
+		return true, report
 	end
 }
