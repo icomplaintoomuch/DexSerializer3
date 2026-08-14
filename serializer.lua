@@ -1,5 +1,4 @@
-
--- Made by Moon, edited by me to work with potasium
+-- edited by me for potassium
 local Main,Serializer,API,Settings,DefaultSettings,env
 
 local service = setmetatable({},{__index = function(self,name)
@@ -11,7 +10,7 @@ end})
 DefaultSettings = {
 	Serializer = {
 		_Recurse = true,
-		Decompile = true,
+		Decompile = false,
 		NilInstances = false,
 		RemovePlayerCharacters = true,
 		SavePlayers = false,
@@ -1899,7 +1898,7 @@ Serializer = (function()
 		end
 
 		buffer[bufferCount] = "\n</SharedStrings>\n</roblox>"
-		env.appendfile(filename,table.concat(buffer))
+		env.writefile(filename,table.concat(buffer))
 		table.clear(buffer)
 		table.clear(hashs)
 		table.clear(sharedStrings)
@@ -1912,6 +1911,9 @@ Serializer = (function()
 
 	Serializer.SaveInstance = function(root,filename,opts)
 		if not gameId then gameId = game.GameId end
+		if filename and type(filename) == "string" then
+			filename = filename:gsub("^[/\\]+", "")
+		end
 
 		-- Potassium writefile() writes relative paths into its workspace.
 		-- Keep the filename relative rather than trying to create a literal
@@ -1966,12 +1968,38 @@ Main = (function()
 		local rawAPI
 		
 		if game:GetService("RunService"):IsStudio() then
-			rawAPI = require(game.ReplicatedStorage.FullAPI)
+			local ok, result = pcall(function()
+				return require(game.ReplicatedStorage.FullAPI)
+			end)
+			if ok then
+				rawAPI = result
+			end
 		else
-			rawAPI = game:HttpGet("https://raw.githubusercontent.com/MaximumADHD/Roblox-Client-Tracker/refs/heads/roblox/Full-API-Dump.json")
+			local fetch = httpget
+			if type(fetch) ~= "function" then
+				return nil, "Potassium httpget() is unavailable"
+			end
+			local ok, result = pcall(fetch, "https://raw.githubusercontent.com/MaximumADHD/Roblox-Client-Tracker/refs/heads/roblox/Full-API-Dump.json")
+			if not ok then
+				return nil, "httpget failed: " .. tostring(result)
+			end
+			rawAPI = result
 		end
-		
-		local api = service.HttpService:JSONDecode(rawAPI)
+
+		if type(rawAPI) == "table" then
+			-- Studio FullAPI may already be decoded.
+		else
+			local ok, decoded = pcall(service.HttpService.JSONDecode, service.HttpService, rawAPI)
+			if not ok then
+				return nil, "Full API JSON decode failed: " .. tostring(decoded)
+			end
+			rawAPI = decoded
+		end
+
+		local api = rawAPI
+		if type(api) ~= "table" or type(api.Classes) ~= "table" or type(api.Enums) ~= "table" then
+			return nil, "Invalid Full API dump"
+		end
 		local classes,enums = {},{}
 
 		for _,class in pairs(api.Classes) do
@@ -2084,19 +2112,8 @@ return {
 		end
 		API = api
 
-		local required = {
-			writefile = writefile,
-			appendfile = appendfile,
-			gethiddenproperty = gethiddenproperty,
-			getnilinstances = getnilinstances,
-			getbspval = getbspval,
-			decompile = decompile,
-			crypt = crypt,
-		}
-		for name,value in pairs(required) do
-			if value == nil then
-				return nil, "Potassium API missing required capability: " .. name
-			end
+		if type(writefile) ~= "function" then
+			return nil, "Potassium writefile() is unavailable"
 		end
 
 		env = {}
