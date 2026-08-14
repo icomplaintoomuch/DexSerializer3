@@ -1,4 +1,3 @@
-
 -- edited for potassium
 local Main,Serializer,API,Settings,DefaultSettings,env
 
@@ -990,10 +989,6 @@ Serializer = (function()
 	end
 
 	local function doDecompile(scr,saveSettings)
-		-- Potassium exposes decompile(script) directly. The original serializer
-		-- expects this helper to return source,err; keep that contract so the
-		-- existing predecompile() and Source-property serialization remain
-		-- unchanged.
 		if type(decompile) ~= "function" then
 			return nil, "Potassium decompile() is unavailable"
 		end
@@ -1502,6 +1497,17 @@ Serializer = (function()
 							end
 						elseif special == "Func" then
 							func = prop.Func
+						elseif special == "Decompile" then
+							-- Script.Source is protected and cannot be read directly.
+							-- Supply the source collected by predecompile() to the
+							-- normal ProtectedString binary handler.
+							func = function(obj)
+								local source = sources[obj]
+								if source ~= nil then
+									return source
+								end
+								return ""
+							end
 						end
 					end
 
