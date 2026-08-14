@@ -989,20 +989,22 @@ Serializer = (function()
 	end
 
 	local function doDecompile(scr,saveSettings)
+		-- Synapse-style path: decompile(script) returns source directly.
+		-- Potassium exposes the same direct decompile capability.
 		if type(decompile) ~= "function" then
-			return nil, "Potassium decompile() is unavailable"
+			return nil, "decompile() is unavailable"
 		end
 
 		local ok, source = pcall(decompile, scr)
 		if ok and type(source) == "string" then
-			return source, nil
+			return source
 		end
 
 		return nil, ok and "decompile() returned no source" or tostring(source)
 	end
 
 	local function createStatusText()
-		if not Drawing or type(Drawing.new) ~= "function" then
+		if not Drawing or not Drawing.new then
 			return nil
 		end
 
@@ -1029,8 +1031,12 @@ Serializer = (function()
 		end
 
 		local function removeStatus()
-			pcall(function() statusText.Visible = false end)
-			pcall(function() statusText:Remove() end)
+			pcall(function()
+				statusText.Visible = false
+			end)
+			pcall(function()
+				statusText:Remove()
+			end)
 		end
 
 		return {Update = updateStatus, Remove = removeStatus}
@@ -1066,7 +1072,7 @@ Serializer = (function()
 			descs[0] = nextRoot
 			for i = 0,#descs do
 				local obj = descs[i]
-				if (isa(obj,"Script") or isa(obj,"LocalScript") or isa(obj,"ModuleScript")) and not checked[obj] then
+				if (isa(obj,"LocalScript") or isa(obj,"ModuleScript")) and not checked[obj] then
 					local ignored = false
 					if ignoredServices then
 						for i = 1,#ignoredServices do
@@ -1090,7 +1096,7 @@ Serializer = (function()
 
 		local left = totalScripts
 		for i = 1,maxThreads do
-			task.spawn(function()
+			spawn(function()
 				while #scripts > 0 do
 					local nextScript = table.remove(scripts)
 					local source, err = doDecompile(nextScript,saveSettings)
@@ -1109,7 +1115,7 @@ Serializer = (function()
 			end)
 		end
 
-		while left > 0 do task.wait() end
+		while left > 0 do wait() end
 
 		return sources
 	end
